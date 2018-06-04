@@ -1,0 +1,596 @@
+---
+title: "Homework Assignment 2"
+author: "Peter Duronelly"
+subtitle: Data Science and Machine Learning 1 - CEU 2018
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    df_print: paged
+---
+
+<style>
+body {
+text-align: justify;
+font-size: 13px}
+</style>
+<br>
+<br>
+
+### 1. Predicting mental health problems in the tech sector
+
+
+```{r}
+library(data.table)
+library(caret)
+library(ggplot2)
+library(GGally)
+library(scales)
+library(ROCR)
+library(pROC)
+```
+
+&nbsp;&nbsp;**1/a.** Reading and cleaning, modifiying data, and also some explorations.
+
+```{r}
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/mental-health-in-tech/survey_cleaned.csv")
+data <- data[ ,c("comments", "state","work_interfere") := NULL]
+data[, age := as.numeric(age)]
+data[ , treatment := factor(treatment, levels = c("Yes", "No"))]
+data <- data[age < 100 & age > 15, ]
+#str(data)
+```
+<br>&nbsp;&nbsp;How frequents are mental problems amongst the techies? It looks that half of them has received some treatment. While the actual nature of their problems are not revealed, this is kind of weird that half of them have mental problems of some sort.
+```{r}
+ggplot(data, aes(treatment)) + geom_bar(fill=I("steelblue3"), col=I("black")) + 
+  labs(title = "Treatments in The Tech Sector", x = "Has the person sought treatment for mental health issues?") + 
+  theme(plot.title = element_text(size = rel(1))) + theme_bw()
+```
+<br>&nbsp;&nbsp;Most of them are in their twnties or thirties. Are developers more prone to mental problems than others, or are they subject to extreme working environments which makes them sick?
+
+
+```{r}
+ggplot(data, aes(age)) + geom_histogram(binwidth = 2, fill=I("steelblue3"), col=I("black")) + theme_bw() +
+  labs(title = "Developer by Age ") + 
+  theme(plot.title = element_text(size = rel(1))) 
+```
+
+```{r}
+ggplot(data, aes(factor(treatment), age)) + geom_boxplot() + theme_bw() +
+  labs(title = "Developer by Age ", x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + scale_y_continuous(breaks = seq(0, 80, by = 10))
+summary(data$age)
+```
+<br>&nbsp;&nbsp;The age distribution is very similiar in both groups. 
+ 
+```{r}
+ggplot(data, aes(treatment)) + geom_bar(fill=I("steelblue3"), col=I("black")) + theme_bw() +
+  facet_wrap(~no_employees) + 
+  labs(title = "Treated and Untreated Developers by Company Size", x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) 
+```
+<br>&nbsp;&nbsp; In case of non-tech companies, the ratio of people getting medical treatment is higher than at tech companies. 
+```{r}
+data[, tech_company2 := ifelse(tech_company == "Yes", "Tech company", "Non-tech company")]
+ggplot(data, aes(treatment, group = tech_company2)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + facet_wrap(~factor(tech_company)) + 
+  labs(title = "Treated and Untreated Developers by Company Type", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.6, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~tech_company2)
+```
+<br>&nbsp;&nbsp;Those who work more thsn 50% of their time remotely have a slightly higher frequency of seeking mental treatments. 
+```{r}
+ggplot(data, aes(treatment, group = remote_work)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Developers With and without Remote Work", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.6, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~remote_work)
+```
+
+<br>&nbsp;&nbsp;Employees of company where the employer has ever discussed mental health as part of an employee wellness program more often seek treatments. 
+```{r}
+ggplot(data, aes(treatment, group = wellness_program)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers With and Without Wellness Programs", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.6, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~wellness_program)
+```
+<br>&nbsp;&nbsp;Females and transgender workers seek more often for treatments for mental conditions. 
+```{r}
+ggplot(data, aes(treatment, group = gender)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers Across Genders", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.7, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~gender)
+```
+<br>&nbsp;&nbsp;The fact whether their anonymity is protected does not seem to be a factor at seeking help for mental health issues. 
+
+```{r}
+ggplot(data, aes(treatment, group = anonymity)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers - Whether Their Anonimity Is Protected", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.6, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~anonymity)
+```
+<br>&nbsp;&nbsp;Interestingly when the employer does not take these issues seriously workers show up in larger proportion for treatment for mental issues. 
+```{r}
+ggplot(data, aes(treatment, group = mental_vs_physical)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers - Whether Their Employer Takes Mental Health Issues Seriously", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.6, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~mental_vs_physical)
+```
+<br>&nbsp;&nbsp;Also, where these issues caused negative consequences at work, people went for these treatments in larger proportions. 
+```{r}
+ggplot(data, aes(treatment, group = obs_consequence)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers - Whether These Issues Were Expected To Have \nNegative Consquences at the Workplace", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.7, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~obs_consequence)
+```
+
+<br>&nbsp;&nbsp;The highest ratio of people having sought for these treatments is amongst those where sick leave on these grounds is somewhat or very difficult. This is not that you would expect. 
+```{r}
+ggplot(data, aes(treatment, group = leave)) + 
+  geom_bar(aes(y = ..prop.., fill = factor(..x..)), stat="count",
+           fill=I("steelblue3"), col=I("black")) + 
+  theme_bw() + 
+  labs(title = "Treated and Untreated Workers - Is It Easy To Take Medical Leave For \nMental Health Issues?", 
+       x = "Has the person sought treatment for mental health issues?" ) + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 0.7, by = 0.1)) + 
+  ylab("relative frequencies") +
+  facet_grid(~leave)
+```
+<br>&nbsp;&nbsp;Finally, older workers tend to show up in larger numbers at the doctor. 
+```{r}
+data[, treatment_fact := ifelse(treatment == "Yes", 1, 0)]
+data_by_age <- data[ , .(sick_rate = mean(treatment_fact), groupsize = .N),
+  keyby = .(age_category = cut(age, breaks = seq(0, 100, by = 5), include.lowest = TRUE))]
+
+ggplot(data = data_by_age, aes(x = age_category, y = sick_rate, size = groupsize)) +
+  geom_point(color = "steelblue3") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + theme_bw() + 
+  labs(title = "Ratio of Treated Workers By Age Group", x = "age group", y = "ratio") + 
+  scale_y_continuous(labels=scales::percent, breaks = seq(0, 1, by = 0.1))
+  
+```
+
+<br>&nbsp;&nbsp;All in all, age, company size, gender, anonymity, the employer's attitude to mental health issues (taking it seriously, easiness to take medical leave on these grounds and assigning consequences).
+
+<br>&nbsp;&nbsp;**1/b.** Splitting the data
+
+```{r}
+set.seed(1971)
+training_ratio <- 0.7
+train_indices <- createDataPartition(y = data[["treatment"]],
+                                     times = 1,
+                                     p = training_ratio,
+                                     list = FALSE)
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+```
+
+
+<br>&nbsp;&nbsp;**1/c.** Building models
+
+```{r}
+trctrl = trainControl(method = "cv", number = 5, classProbs = TRUE, 
+                      summaryFunction = twoClassSummary)
+
+
+glmnet_model <- train(treatment ~ age +
+                        no_employees +
+                        anonymity +
+                        gender +
+                        mental_vs_physical +
+                        leave + 
+                        obs_consequence,
+                      data = data_train,
+                      method = "glmnet",
+                      preProcess = c("center", "scale"),
+                      trControl = trctrl,
+                      metric = "ROC") 
+glmnet_model
+```
+
+```{r}
+
+rpart_model <- train(treatment ~ age +
+                       no_employees +
+                       anonymity +
+                       gender +
+                       mental_vs_physical +
+                       leave +
+                       obs_consequence,
+                     data = data_train,
+                     method = "rpart",
+                     preProcess = c("center", "scale"),
+                     trControl = trctrl,
+                     metric = "ROC")
+rpart_model
+```
+<br>&nbsp;&nbsp;**1/d.** Comparing models based on AUC. 
+
+```{r}
+rpart_prediction <- predict.train(rpart_model, newdata = data_test)
+rpart_truth <- data_test$treatment
+confusionMatrix(rpart_prediction, rpart_truth)
+```
+
+```{r}
+cmx <- confusionMatrix(rpart_prediction, rpart_truth)
+cmx$table[[4]]
+cmx$table
+```
+
+```{r}
+
+rpart_prediction_prob <- predict.train(rpart_model, newdata = data_test, type = "prob")
+rpart_rocr_prediction <- prediction(rpart_prediction_prob$Yes, data_test$treatment)
+#rpart_AUC <- performance(rpart_rocr_prediction, measure = "auc")
+rpart_AUC <- performance(rpart_rocr_prediction, "auc")@y.values[[1]]
+print(rpart_AUC)
+
+```
+
+```{r}
+glmnet_prediction <- predict.train(glmnet_model, newdata = data_test)
+glmnet_truth <- data_test$treatment
+confusionMatrix(glmnet_prediction, glmnet_truth)
+
+```
+
+
+```{r}
+glmnet_prediction_prob <- predict.train(glmnet_model, newdata = data_test, type = "prob")
+glmnet_rocr_prediction <- prediction(glmnet_prediction_prob$Yes, data_test$treatment)
+glmnet_AUC <- performance(glmnet_rocr_prediction, "auc")@y.values[[1]]
+print(glmnet_AUC)
+
+```
+
+&nbsp;&nbsp;The **glmnet** model gives higher AUC: .64 vs .55. The rpart model was better in specifity: identifing those who do not go to doctor. The fpr is under 14 percent in this case. Glmnet model's performance was more balanced across the cases. 
+
+<br>&nbsp;&nbsp;**1/e.** Drawing the ROCs
+
+```{r}
+glmnet_perf <- performance(glmnet_rocr_prediction, measure = "tpr", x.measure = "fpr")
+
+glmnet_roc_df <- data.table(model = "glmnet", 
+                            FPR = glmnet_perf@x.values[[1]],
+                            TPR = glmnet_perf@y.values[[1]],
+                            cutoff = glmnet_perf@alpha.values[[1]])
+
+rpart_perf <- performance(rpart_rocr_prediction, measure = "tpr", x.measure = "fpr")
+
+rpart_roc_df <- data.table(model = "rpart", 
+                            FPR = rpart_perf@x.values[[1]],
+                            TPR = rpart_perf@y.values[[1]],
+                            cutoff = rpart_perf@alpha.values[[1]])
+
+roc_df <- rbind(glmnet_roc_df, rpart_roc_df)
+
+ggplot(roc_df) + 
+  geom_line(aes(FPR, TPR, linetype = model), size = 1.25) + theme_bw() + 
+  labs(title = "ROC curves from rpart and glmnet models", x = "false positive rate", y = "true positive rate") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+
+```
+
+<br>&nbsp;&nbsp;As we can see, the glmnet model has better characteristics than the rpart model: the latter goes linear after false positive rate goes beyond 10 percent. Also, the glmnet covers more area in the prediction precision space: with the exception of a few extreme values at high false positive rates, it gives a higher true positive rate at any given false positive rate value. It's accuracy, measured by the AUC is 64 percent vs the AUC of the rpart regression tree model. 
+
+<br>&nbsp;&nbsp;**1/f.** Shifting probability thresholds
+
+&nbsp;&nbsp;For the sake of simplicity I am using the glmnet model to find the tpr and fpr combinations. 
+```{r}
+prob_thresholds <- seq(0.35, 0.8, by = 0.05)
+tprs <- rep(0, length(prob_thresholds))
+fprs <- rep(0, length(prob_thresholds))
+
+
+for(i in 1:length(prob_thresholds)){
+  thr <- prob_thresholds[i]
+  glmnet_test_prediction <- ifelse(glmnet_prediction_prob$Yes > thr, "Yes", "No")
+  glmnet_test_prediction <- factor(glmnet_test_prediction, levels = c("Yes", "No"))
+  cmx <- confusionMatrix(glmnet_test_prediction, glmnet_truth)
+  cmx
+  tprs[i] <- cmx$table[1]/(cmx$table[1]+cmx$table[2])
+  fprs[i] <- cmx$table[3]/(cmx$table[3]+cmx$table[4])
+}
+
+manual_roc <- data.table("thresholds" = prob_thresholds,
+                         "fpr" = fprs,
+                         "tpr" = tprs)
+
+ggplot(data = manual_roc) + 
+  geom_point(aes(x = fpr, y = tpr), size = 1.5) + geom_abline(linetype = "dashed") +
+  geom_text(aes(x = fpr, y = tpr, label=thresholds),hjust=1, vjust=-0.5) + theme_bw() + 
+  labs(title = "Calculated tpr and fpr pairs by probability thresholds \nfrom the glmnet model", x = "false positive rate", 
+       y = "true positive rate") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+
+```
+
+<br>&nbsp;&nbsp;I would pick a 45 percent probability threshold to identify people who poetentially need help to avoid mental problems on the workplace. With this threshold false positive rates would be high (over 50 ppercent) but I would be able, on average, to identify three quarters of those who may need some coaching, mentoring or other ways of help. 
+```{r}
+glmnet_test_prediction <- ifelse(glmnet_prediction_prob$Yes > 0.45, "Yes", "No")
+glmnet_test_prediction <- factor(glmnet_test_prediction, levels = c("Yes", "No"))
+cmx <- confusionMatrix(glmnet_test_prediction, glmnet_truth)
+
+print(paste("We identified ", cmx$table[1]+cmx$table[2], " workers with potential mental problems, out of whom ", cmx$table[1], " really needed mental treatment."))
+cat("\n")
+print("The according confusion matrix is: ")
+cat("\n")
+print(cmx$table)
+  
+```
+
+
+### 2. Transformed scores
+
+&nbsp;&nbsp;Reading and cleaning data.
+```{r}
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/medical-appointments-no-show/no-show-data.csv")
+data[, c("PatientId", "AppointmentID", "Neighbourhood") := NULL]
+setnames(data, 
+         c("No-show", 
+           "Age", 
+           "Gender",
+           "ScheduledDay", 
+           "AppointmentDay",
+           "Scholarship",
+           "Hipertension",
+           "Diabetes",
+           "Alcoholism",
+           "Handcap",
+           "SMS_received"), 
+         c("no_show", 
+           "age", 
+           "gender", 
+           "scheduled_day", 
+           "appointment_day",
+           "scholarship",
+           "hypertension",
+           "diabetes",
+           "alcoholism",
+           "handicap",
+           "sms_received"))
+# clean up a little bit
+data <- data[age %between% c(0, 95)]
+# for binary prediction with caret, the target variable must be a factor
+data[, no_show := factor(no_show, levels = c("Yes", "No"))]
+data[, no_show_num := ifelse(no_show == "Yes", 1, 0)]
+data[, handicap := ifelse(handicap > 0, 1, 0)]
+
+# create new variables
+data[, scheduled_day := as.Date(scheduled_day)]
+data[, appointment_day := as.Date(appointment_day)]
+data[, days_since_scheduled := as.integer(appointment_day - scheduled_day)]
+data <- data[days_since_scheduled > -1]
+data[, days_category := cut(
+  days_since_scheduled, 
+  breaks = c(-1, 0, 1, 2, 5, 10, 30, Inf), 
+  include.lowest = TRUE)]
+```
+
+&nbsp,&nbsp;Splitting into training and test data.
+```{r}
+training_ratio <- 0.7 
+set.seed(1)
+train_indices <- createDataPartition(y = data$no_show,
+                                     times = 1,
+                                     p = training_ratio,
+                                     list = FALSE)
+
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+```
+&nbsp;&nbsp;Estimating a model.
+```{r}
+train_control <- trainControl(method = "cv",
+                              number = 5,
+                              classProbs = TRUE,
+                              verboseIter = TRUE,
+                              summaryFunction = twoClassSummary) # necessary!
+
+tune_grid <- expand.grid("alpha" = c(0, 1),
+                         "lambda" = c(0.01, 0.001, 0.0001))
+
+set.seed(857)
+glmnet_model <- train(no_show ~ days_category + 
+                                poly(age, 3) +
+                                scholarship +
+                                gender +
+                                alcoholism +
+                                diabetes,
+                      data = data_train,
+                      method = "glmnet",
+                      preProcess = c("center", "scale"),
+                      trControl = train_control,
+                      tuneGrid = tune_grid,
+                      metric = "ROC")  
+glmnet_model
+```
+&nbsp;&nbsp;Making predictions
+```{r}
+prediction <- predict.train(glmnet_model, newdata = data_test, type = "prob")
+prediction_sqrt <- sqrt(prediction)
+prediction_sq <- prediction^2
+```
+
+&nbsp;&nbsp;**2/a.** Drawing ROC curves
+
+```{r}
+#Simple prediction
+
+prediction_outcome <- prediction(prediction$Yes, data_test$no_show)
+
+prediction_perf <- performance(prediction_outcome, measure = "tpr", x.measure = "fpr")
+
+prediction_perf_df <- data.table(model = "simple", 
+                            FPR = prediction_perf@x.values[[1]],
+                            TPR = prediction_perf@y.values[[1]],
+                            cutoff = prediction_perf@alpha.values[[1]])
+
+#Sqrt function prediction
+
+prediction_sqrt_outcome <- prediction(prediction_sqrt$Yes, data_test$no_show)
+
+prediction_sqrt_perf <- performance(prediction_sqrt_outcome, measure = "tpr", x.measure = "fpr")
+
+prediction_sqrt_perf_df <- data.table(model = "sqrt", 
+                            FPR = prediction_sqrt_perf@x.values[[1]],
+                            TPR = prediction_sqrt_perf@y.values[[1]],
+                            cutoff = prediction_sqrt_perf@alpha.values[[1]])
+
+#Sq function prediction
+
+prediction_sq_outcome <- prediction(prediction_sq[,1], data_test$no_show)
+
+prediction_sq_perf <- performance(prediction_sq_outcome, measure = "tpr", x.measure = "fpr")
+
+prediction_sq_perf_df <- data.table(model = "squared", 
+                            FPR = prediction_sq_perf@x.values[[1]],
+                            TPR = prediction_sq_perf@y.values[[1]],
+                            cutoff = prediction_sq_perf@alpha.values[[1]])
+
+#Combining perfomrance objects
+roc_df <- rbind(prediction_perf_df, prediction_sqrt_perf_df, prediction_sq_perf_df)
+
+ggplot(roc_df) + 
+  geom_line(aes(FPR, TPR, linetype = model), size = 1.25) + theme_bw() + 
+  labs(title = "ROC curves under different probability functions", 
+       x = "false positive rate", y = "true positive rate") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+
+
+```
+
+<br>&nbsp;&nbsp;The three curves completely overlap. And they have to. 
+
+&nbsp;&nbsp;**2/b.** Common properties
+
+&nbsp;&nbsp;ROC is plotted by calculating tpr and fpr ratios for threshold values which are iterated on the [0; 1] interval. If we tweak the model probs through a monotinic transformation but we apply the same iterations for the **same model** we will get the same characteristic curve for the fpr/tpr relationships. 
+
+
+&nbsp;&nbsp;**2/C.** Calibration plots
+
+```{r}
+test_truth <- data_test$no_show
+
+test_truth_numeric <- ifelse(test_truth == "Yes", 1, 0)
+
+
+score_simple <- prediction$Yes
+
+score_sqrt <- prediction_sqrt$Yes
+
+score_sq <- prediction_sq[,1]
+```
+
+<br>Plotting actual vs modelled with oroginal probs.
+```{r}
+
+actual_vs_predicted <- data.table(actual = test_truth_numeric,
+                                  predicted = score_simple)
+
+actual_vs_predicted[, score_category := cut(predicted,
+                                    seq(0, 1, 0.05),
+                                    include.lowest = TRUE)]
+
+calibration <- actual_vs_predicted[, .(mean_actual = mean(actual),
+                                       mean_predicted = mean(predicted),
+                                       observations = .N),
+                                   keyby = .(score_category)]
+
+ggplot(calibration, aes(x = mean_actual, y = mean_predicted, size = observations)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  ylim(0, 1) + xlim(0, 1) + theme_bw() + 
+  labs(title = "Actual vs model probabilities with original values", 
+       x = "actual probabilities", y = "model probabilities") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+```
+
+<br>Plotting actual vs modelled with square root of probs.
+```{r}
+
+actual_vs_predicted <- data.table(actual = test_truth_numeric,
+                                  predicted = score_sqrt)
+
+actual_vs_predicted[, score_category := cut(predicted,
+                                    seq(0, 1, 0.05),
+                                    include.lowest = TRUE)]
+###We need to transfomr the predicted value numbers accordingly! 
+calibration <- actual_vs_predicted[, .(mean_actual = sqrt(mean(actual)),
+                                       mean_predicted = mean(predicted),
+                                       observations = .N),
+                                   keyby = .(score_category)]
+
+ggplot(calibration, aes(x = mean_actual, y = mean_predicted, size = observations)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  ylim(0, 1) + xlim(0, 1) + theme_bw() + 
+  labs(title = "Actual vs model probabilities with square root values", 
+       x = "actual probabilities", y = "model probabilities") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+```
+
+<br>Plotting actual vs modelled with prob squares.
+```{r}
+
+actual_vs_predicted <- data.table(actual = test_truth_numeric,
+                                  predicted = score_sq)
+
+actual_vs_predicted[, score_category := cut(predicted,
+                                    seq(0, 1, 0.05),
+                                    include.lowest = TRUE)]
+
+calibration <- actual_vs_predicted[, .(mean_actual = mean(actual)^2,
+                                       mean_predicted = mean(predicted),
+                                       observations = .N),
+                                   keyby = .(score_category)]
+
+ggplot(calibration, aes(x = mean_actual, y = mean_predicted, size = observations)) +
+  geom_point() + geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  ylim(0, 1) + xlim(0, 1) + theme_bw() + 
+  labs(title = "Actual vs model probabilities with squared probabilities", 
+       x = "actual probabilities", y = "model probabilities") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+```
+
+<br>&nbsp;&nbsp;The original model implied probabilities mostly overlap with the original no show rates until the actual rate goes above 50 percent. This however, is only a fraction of the test population, the model using the non-twisted probabilites work quite well on the bulk of the population. Transforming the actual no show rates according to the model we get a different distributions but the model does overlap with the transformed actual proportion. 

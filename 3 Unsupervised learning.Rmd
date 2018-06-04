@@ -1,0 +1,261 @@
+---
+title: "Homework Assignment 3"
+author: "Peter Duronelly"
+subtitle: Data Science and Machine Learning 1 - CEU 2018
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    df_print: paged
+---
+
+<style>
+body {
+text-align: justify;
+font-size: 13px}
+</style>
+<br>
+<br>
+
+### 1. PCA For Supervised Learning
+
+```{r, messages = FALSE, warning=FALSE}
+library(data.table)
+library(datasets)
+library(MASS)
+library(ISLR)
+library(caret)
+library(ggplot2)
+library(GGally)
+library(NbClust)
+library(factoextra)
+library(dplyr)
+
+setwd("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/Homeworks")
+
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+
+data <- data.table(Boston)
+
+glimpse(data)
+```
+
+**1.a: Do a short exploration of data and find possible predictors of the target variable.**
+
+The data is information collected by the US Census Service in the area of Boston. It is a small dataset with only 506 observations but with a relatively high number of variables. The target variable is per capita crime rate per town ('crim') and the predictors are 13 numerical variables. These predictors include information on potential job opportunities (proportion of non-retail business acres per town, weighted distances to five Boston employment centres), housing conditions (proportion of owner-occupied units built prior to 1940, median value of owner-occupied homes, rooms per dwelling), the population's social status (% lower status of the population, full-value property-tax rate per $10,000) or schooling (pupil-teacher ratio). We also have information on the proportion of black population, but the definition of the data looks to be somewhat murky. 
+
+The usual suspects for crime rate prediction are usually the social status variables, which frequantly interact with housing-related factors (eg. median home values are both social and housing indicators), education factors (pupil-to-teacher ratio in this case) and job opportunities (business acres per town).
+
+Plotting the variables results in the following pattern. 
+
+```{r}
+ggpairs(data, c("crim", "indus", "age", "ptratio", "black", "lstat")) + 
+  labs(title = "Pairwise correlations in the MASS dataset") + 
+  theme(plot.title = element_text(size = rel(1.25))) 
+  
+```
+
+**1.b: Create a training and a test set of 50%.**
+
+```{r, message=FALSE, warning=FALSE}
+train_indices <- createDataPartition(y = data$crim,
+                                     times = 1,
+                                     p = 0.5,
+                                     list = FALSE)
+data_train <- data[train_indices, ]
+data_test <- data[-train_indices, ]
+```
+
+**1.c: Use a linear regression to predict crim and use 10-fold cross validation to assess the predictive power**
+
+The linear regression will include all the variables as predictor. 
+
+```{r, message=FALSE, warning=FALSE}
+train_control <- trainControl(method = "cv", 
+                                 number = 10)
+
+lm <- train(crim ~ .,
+            data = data_train,
+            method = "lm",
+            trrControl = train_control,
+            metric = "RMSE")
+
+rmse <- RMSE(predict.train(lm, data_test), data_test$crim)
+
+print(paste("The linear model's RMSE is: ", round(rmse, 2), " .",sep = ""))
+
+```
+
+**1.d: Try to improve the model by using PCA for dimensionality reduction. Center and scale your variables and use pcr to conduct a search for the optimal number of principal components. Does PCA improve the fit over the simple linear model?**
+
+
+```{r, message=FALSE, warning=FALSE}
+tune_grid <- data.frame(ncomp = 1:13)
+set.seed(1971)
+pca_model <- train(crim~.,
+                   data = data_train, 
+                   method = "pcr",
+                   trControl = train_control,
+                   tuneGrid = tune_grid,
+                   preProcess = c("center", "scale")
+                   )
+rmse <- RMSE(predict.train(pca_model, data_test), data_test$crim)
+
+print(paste("The PCA-based linear model's RMSE is: ", round(rmse, 2), " .",sep = ""))
+```
+There is no meaningful improvement in RMSE using principal components instead of actual variables. 
+
+
+**1.e: Use penalized linear models for the same task. Make sure to include lasso (alpha = 0) to your tune grid. How does the best model compare to that found in d)? Would pre-processing via PCA help this model? (add pca to preProcess). Why do you think the answer can be expected?**
+
+Note: I used alpha = 1 for lasso. 
+
+```{r, message=FALSE, warning=FALSE}
+lasso_model <- train(crim ~ .,
+                     data = data_train,
+                     method = "glmnet",
+                     trControl = train_control,
+                     tuneGrid = expand.grid(alpha = 1, lambda = seq(0.1, 1.0, 0.1)))
+
+rmse <- RMSE(predict.train(lasso_model, data_test), data_test$crim)
+
+print(paste("The lasso model's RMSE is: ", round(rmse, 2), " .",sep = ""))
+```
+If we use PCA in lasso, we get the following error metric.
+```{r, message=FALSE, warning=FALSE}
+
+lasso_pca_model <- train(crim ~ .,
+                     data = data_train,
+                     method = "glmnet",
+                     trControl = trainControl(
+                       method = "cv",
+                       number = 10,
+                       preProcOptions = (thresh = 0.95)),
+                     preProcess = c("center", "scale", "pca"),
+                     tuneGrid = expand.grid(alpha = 1, lambda = seq(0.1, 1.0, 0.1)))
+
+rmse <- RMSE(predict.train(lasso_model, data_test), data_test$crim)
+
+print(paste("The PCA-based lasso model's RMSE is: ", round(rmse, 2), " .",sep = ""))
+
+```
+As the information from the model was slighlty reduced, we were obviously not able to improve the model's fit. 
+
+**1.f: Evaluate your preferred model on the test set**
+
+Once I attended a course on financial market modelling in London where GARCH-models were presented by a guest professor. (I had already covered GARCH from my previous readings.) As the discussion went deeper and deeper into GARCH, the course's instructor intervened in the debate. He said: 'You know what? OLS will do.'
+
+This is how I feel with these ML tools. At the end of the day, OLS wins. I prefer a simple OLS. All that muddling with models result in the the same error metric as the simple old OLS. (I should have a t-shirt with this 'OLS will do' printed to the front and the back.)
+
+
+### Clustering on the USArrests dataset
+
+```{r, message=FALSE, warning=FALSE}
+data <- USArrests
+glimpse(data)
+```
+
+**2.a: Determine the optimal number of clusters as indicated by NbClust heuristics**
+
+```{r, message=FALSE, warning=FALSE}
+nb <- NbClust(data, method = "kmeans", 
+              min.nc = 2, max.nc = 10, index = "all")
+nb
+```
+```{r}
+fviz_nbclust(nb) 
+```
+
+<br>According to the chart, a cluster of 2 makes sense for this crime dataset. The gap method (not shown here) also suggests two clusters. 
+
+**2.b: Use the k-means method to cluster states using the number of clusters found in a) and anything else that you think that makes sense. Plot observations colored by clusters in the space of urban population and another (crime-related) variable. (See example code from class, use  factor(km$cluster) to create a vector of class labels)**
+
+
+```{r, message=FALSE, warning=FALSE}
+km <- kmeans(data, centers = 2)
+dwc <- cbind(data, data.table("cluster" = factor(km$cluster)))
+
+ggplot(dwc) + geom_point(aes(x = UrbanPop, y = Assault, shape = cluster, color = cluster)) + 
+  theme_bw() + 
+  labs(title = "States in the population - assault space", 
+       x = "urban population ratio",
+       y = "assaults per 100,000 inhabitants") + 
+  theme(plot.title = element_text(size = rel(1.25))) 
+```
+<br>
+States are split into these two clusters based on the assault rate per 100K inhabitants. A ratio north of 0.2 pct can be considered high among US states. 
+
+
+**2.c: Perform PCA and make clusters based on them**
+
+```{r, message=FALSE, warning=FALSE}
+pca_result <- prcomp(data, scale. = TRUE)
+first_two_pc <- data.table(pca_result$x[, 1:2])
+pcac <- cbind(data, first_two_pc, data.table("cluster" = factor(km$cluster)))
+
+ggplot(pcac) + geom_point(aes(x = PC1, y = PC2, shape = cluster, color = cluster)) + 
+  theme_bw() + 
+  labs(title = "States in the first two principal component space", 
+       x = "first principal component",
+       y = "second principal component") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+```
+<br>
+It looks that it is the first principal component which splits the states into two clusters. 
+
+
+### 3. PCA of high-dimensional data
+
+```{r, message=FALSE, warning=FALSE}
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/gene_data_from_ISLR_ch_10/gene_data.csv")
+data[, is_diseased := factor(is_diseased)]
+dim(data)
+tail(names(data))
+
+```
+
+
+**3.a: Perform PCA on this data with scaling features**
+
+```{r, message=FALSE, warning=FALSE}
+
+data_features <- copy(data)
+data_features[, is_diseased := NULL]
+pca_result <- prcomp(data_features, scale. = TRUE)
+
+
+```
+
+**3.b: Visualize datapoints in the space of the first two principal components. What do you see in the figure?**
+
+```{r, message=FALSE, warning=FALSE}
+fviz_pca_ind(pca_result, scale = 0)
+
+```
+<br>The first principal component splits the observations into two groups, most likely the healthy and the deceased patients. 
+
+**3.c: Which individual features can matter the most in separating diseased from healthy?**
+
+```{r, message=FALSE, warning=FALSE}
+loadings <- (pca_result$rotation)
+loadings <- data.table(loadings, keep.rownames = TRUE)
+loadings[, PC1 := abs(PC1)]
+loadings <- loadings[order(PC1, decreasing = TRUE),]
+head(loadings)
+
+```
+
+ <br> 
+ As we see, measure_502 and measure_589 have the highest loadings in absolut value in the dataset. 
+ 
+ 
+ 
+```{r, message=FALSE, warning=FALSE}
+
+ggplot(data) + geom_point(aes(x = measure_502, y = measure_589, 
+                              color = is_diseased, shape = is_diseased) ) + theme_bw() + 
+  labs(title = "Patients according to two critical measures") + 
+  theme(plot.title = element_text(size = rel(1.25)))
+```
+<br>
+These two measures have high linear correlation, and are this way likely to be critical causes of diseases at patients. Beyond the value of 1 for measure_502 and 1.5 for measure_589 patients can be expected to have the desease in question. 

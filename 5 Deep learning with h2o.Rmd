@@ -1,0 +1,647 @@
+---
+title: "Homework Assignment 2"
+author: "Peter Duronelly"
+subtitle: Data Science and Machine Learning 2 - CEU 2018
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    df_print: paged
+---
+
+<style>
+body {
+text-align: justify;
+font-size: 13px}
+</style>
+<br>
+<br>
+
+### 0. Initialization
+
+```{r, message=FALSE, warning=FALSE}
+library(data.table)
+library(magrittr)
+library(h2o)
+library(data.table)
+library(rlist)
+library(pander)
+
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/medical-appointments-no-show/no-show-data.csv")
+
+# some data cleaning
+data[, c("PatientId", "AppointmentID", "Neighbourhood") := NULL]
+setnames(data, 
+         c("No-show", 
+           "Age", 
+           "Gender",
+           "ScheduledDay", 
+           "AppointmentDay",
+           "Scholarship",
+           "Hipertension",
+           "Diabetes",
+           "Alcoholism",
+           "Handcap",
+           "SMS_received"), 
+         c("no_show", 
+           "age", 
+           "gender", 
+           "scheduled_day", 
+           "appointment_day",
+           "scholarship",
+           "hypertension",
+           "diabetes",
+           "alcoholism",
+           "handicap",
+           "sms_received"))
+
+# for binary prediction, the target variable must be a factor
+data[, no_show := factor(no_show, levels = c("Yes", "No"))]
+data[, handicap := ifelse(handicap > 0, 1, 0)]
+
+# create new variables
+data[, gender := factor(gender)]
+data[, scholarship := factor(scholarship)]
+data[, hypertension := factor(hypertension)]
+data[, alcoholism := factor(alcoholism)]
+data[, handicap := factor(handicap)]
+
+data[, scheduled_day := as.Date(scheduled_day)]
+data[, appointment_day := as.Date(appointment_day)]
+data[, days_since_scheduled := as.integer(appointment_day - scheduled_day)]
+
+# clean up a little bit
+data <- data[age %between% c(0, 95)]
+data <- data[days_since_scheduled > -1]
+data[, c("scheduled_day", "appointment_day", "sms_received") := NULL]
+
+
+h2o.init()
+
+data <- as.h2o(data)
+
+```
+
+### 1. Deep learning with h2o (7 points)
+
+Please for all models you are building, use reproducible = TRUE option so that conclusions that you draw are not dependent on the particular run of your models. Also, please set the same seed.
+
+a. Create train / validation / test sets, cutting the data into 5% - 45% - 50% parts.
+
+
+```{r, message=FALSE, warning=FALSE}
+data_split <- h2o.splitFrame(data, ratios = c(0.05, 0.5), seed = 1971)
+data_train <- data_split[[1]]
+data_valid <- data_split[[2]]
+data_test <- data_split[[3]]
+
+y = "no_show"
+X = setdiff(names(data), y)
+```
+
+b. Train a benchmark model of your choice using h2o (such as random forest, gbm or glm) and evaluate it on the validation set.
+
+The benchmark will be a gradient boosting model, with 100 trees and a few regularization parameters. 
+
+```{r, message=FALSE, warning=FALSE}
+gbm_params <- list(learn_rate = c(0.01, 0.05),
+                    max_depth = c(2, 3, 5),
+                    sample_rate = c(0.5),
+                    col_sample_rate = c(0.5, 1.0))
+
+# Train and validate a cartesian grid of GBMs
+gbm_grid <- h2o.grid(x = X, 
+                     y = y, 
+                     training_frame = data_train, 
+                     algorithm = "gbm", 
+                     nfolds = 5,
+                     seed = 1971,
+                     ntrees = 100,
+                     hyper_params = gbm_params)
+
+h2o.getGrid(gbm_grid@grid_id, sort_by = "AUC", decreasing = TRUE)
+
+
+```
+```{r, message=FALSE, warning=FALSE}
+AUCs <- data.table(model = character(),
+                   AUC = numeric())
+```
+
+The best model has a learning rate of 0.01, a depth of 3 and a columns sample rate of 5 percent. The resulting AUC is added to a data table for further comparison. 
+
+```{r, message=FALSE, warning=FALSE}
+
+gbm_model <-  h2o.getModel(h2o.getGrid(gbm_grid@grid_id)@model_ids[[1]])
+gbm_valid_AUC <- h2o.auc(h2o.performance(gbm_model, newdata = data_valid))
+l <- list("gbm_model")
+l <- list.append(l, gbm_valid_AUC)
+AUCs <- rbind(AUCs, l)
+```
+
+c. Build deep learning models. Experiment with parameter settings regarding
+
+* network topology (varying number of layers and nodes within layers)
+* activation function
+* dropout (both hidden and input layers)
+* lasso, ridge regularization
+* early stopping (changing stopping rounds, tolerance) and number of epochs
+
+As a starter I try a small network with twenty epochs, and no dropouts or penalty terms. AUC is added to the list. 
+
+```{r}
+dl_model_small <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(32,32),
+                             activation = "Tanh",
+                             epochs = 20,
+                             #mini_batch_size = 10,
+                             #hidden_dropout_ratios = c(0.1),
+                             #input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 2,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_small_AUC <- h2o.performance(dl_model_small, data_valid)@metrics$AUC
+
+l <- list("dl_model_small")
+l <- list.append(l, dl_model_small_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+
+Next I add a new network, with three larger layers, a little longer epoch and a stopping round of 3. The model still using a sigmoid-like activation function. 
+
+```{r}
+dl_model_medium <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "Tanh",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             #hidden_dropout_ratios = c(0.1),
+                             #input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_medium_AUC <- h2o.performance(dl_model_medium, data_valid)@metrics$AUC
+
+l <- list("dl_model_medium")
+l <- list.append(l, dl_model_medium_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+As the model did not improve AUC meaningfully, I use dropouts in the next models. As a start, I use only hidden layer dropout. 
+
+```{r}
+dl_model_droput_1 <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "TanhWithDropout",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             hidden_dropout_ratios = c(0.1, 0.1, 0.1),
+                             #input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_droput_1_AUC <- h2o.performance(dl_model_droput_1, data_valid)@metrics$AUC
+
+l <- list("dl_model_droput_1")
+l <- list.append(l, dl_model_droput_1_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+
+Next I increase the dropout ratios for the hidden layers. 
+
+```{r}
+dl_model_droput_2 <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "TanhWithDropout",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             #input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_droput_2_AUC <- h2o.performance(dl_model_droput_2, data_valid)@metrics$AUC
+
+l <- list("dl_model_droput_2")
+l <- list.append(l, dl_model_droput_2_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+
+Hidden layer dropouts do not increase AUC even in larger ratios, so I add iput layer droput of 40 percent. 
+
+```{r}
+dl_model_droput_3 <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "TanhWithDropout",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_droput_3_AUC <- h2o.performance(dl_model_droput_3, data_valid)@metrics$AUC
+
+l <- list("dl_model_droput_3")
+l <- list.append(l, dl_model_droput_3_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+Input drouput just made things worst, at least in this setup. I try Rectifier activation to see whether it helps. 
+
+```{r}
+dl_model_droput_4 <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "RectifierWithDropout",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_droput_4_AUC <- h2o.performance(dl_model_droput_4, data_valid)@metrics$AUC
+
+l <- list("dl_model_droput_4")
+l <- list.append(l, dl_model_droput_4_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+Still no major improvement, so I go back to the no-droupot version with rectifier. 
+
+```{r}
+dl_model_medium_rect <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "Rectifier",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             #hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             #input_dropout_ratio = 0.4,
+                             #l1 = 0.001,
+                             #l2 = 0.001
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_medium_rect_AUC <- h2o.performance(dl_model_medium_rect, data_valid)@metrics$AUC
+
+l <- list("dl_model_medium_rect")
+l <- list.append(l, dl_model_medium_rect_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+There is a clear deterioration with dropout, hence I keep the full network. For further regularization, I try l1-l2 regularization. 
+
+
+```{r}
+dl_model_medium_ll <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "Rectifier",
+                             epochs = 30,
+                             #mini_batch_size = 10,
+                             #hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             #input_dropout_ratio = 0.4,
+                             l1 = 0.001,
+                             l2 = 0.001,
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_medium_ll_AUC <- h2o.performance(dl_model_medium_ll, data_valid)@metrics$AUC
+
+l <- list("dl_model_medium_ll")
+l <- list.append(l, dl_model_medium_ll_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+Finally I do one with improving the fit by batches. I swith back to Tanh activation.
+
+```{r}
+dl_model_medium_ll_batch <- h2o.deeplearning(x = X, 
+                             y = y, 
+                             training_frame = data_train, 
+                             validation_frame = data_valid,
+                             reproducible = TRUE,
+                             hidden = c(128,128,128),
+                             activation = "Tanh",
+                             epochs = 30,
+                             mini_batch_size = 20,
+                             #hidden_dropout_ratios = c(0.25, 0.25, 0.25),
+                             #input_dropout_ratio = 0.4,
+                             l1 = 0.001,
+                             l2 = 0.001,
+                             stopping_rounds = 3,
+                             stopping_metric = "AUC",
+                             stopping_tolerance = 0.01,
+                             seed = 1971)
+
+dl_model_medium_ll_batch_AUC <- h2o.performance(dl_model_medium_ll_batch,
+                                                data_valid)@metrics$AUC
+
+l <- list("dl_model_medium_ll_batch")
+l <- list.append(l, dl_model_medium_ll_batch_AUC)
+AUCs <- rbind(AUCs, l)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+AUCs <- AUCs[][order(-AUC)]
+
+```
+
+Having tried various network topologies I have not found any networks which could beat the gradient boosting model, based on AUC. 
+
+```{r, message=FALSE, warning=FALSE}
+
+pander(AUCs, caption = "Model performances")
+
+```
+
+```{r, echo = F, message=FALSE, warning=FALSE}
+
+```
+
+d. How does your best model compare to the benchmark model on the test set?
+
+```{r, message=FALSE, warning=FALSE}
+best_net_test_AUC <- h2o.auc(h2o.performance(dl_model_medium_rect, newdata = data_test))
+
+gbm_test_AUC <- h2o.auc(h2o.performance(gbm_model, newdata = data_test))
+
+print(paste0("The benchmark model's AUC on the test set is ", round(gbm_test_AUC,3), " while the best neural net managed to eke out ", round(best_net_test_AUC, 3), " only."))
+```
+
+e. Evaluate the model that performs best based on the validation set on the test set.
+
+Since the very best model is the benchmark model, I already evaluated it in point d). But to make it straight, I replicate the result. 
+```{r, message=FALSE, warning=FALSE}
+
+print(paste0("The best model is the gradiant boosting model which produces an AUC of ", 
+             round(gbm_test_AUC,3), " on the test set."))
+
+```
+
+### 2. Stacking with h2o (6 points)
+
+Take the same problem and data splits.
+
+a. Build at least 4 models of different families using cross validation, keeping cross validated predictions.
+
+I decided to build a random forest, a generalized linear, a gradient boosting and a neural net model. 
+
+```{r, message=FALSE, warning=FALSE}
+nfolds <- 5
+
+my_gbm <- h2o.gbm(x = X,
+                  y = y,
+                  training_frame = data_train,
+                  distribution = "bernoulli",
+                  ntrees = 10,
+                  max_depth = 3,
+                  min_rows = 2,
+                  learn_rate = 0.01,
+                  nfolds = nfolds,
+                  fold_assignment = "Modulo",
+                  keep_cross_validation_predictions = TRUE,
+                  seed = 1971)
+
+my_rf <- h2o.randomForest(x = X,
+                          y = y,
+                          training_frame = data_train,
+                          ntrees = 50,
+                          nfolds = nfolds,
+                          mtries = 3,
+                          fold_assignment = "Modulo",
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 1971)
+
+
+my_glm <- h2o.glm(x = X, 
+                   y = y, 
+                   training_frame = data_train,
+                  family = "binomial",
+                   alpha = 0,
+                   nfolds = nfolds, 
+                   fold_assignment = "Modulo",
+                   keep_cross_validation_predictions = TRUE,
+                   seed = 1971)
+
+my_nn <- h2o.deeplearning(x = X, 
+                          y = y, 
+                          training_frame = data_train,
+                          nfolds = nfolds,
+                          fold_assignment = "Modulo",
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 1971)
+
+
+
+```
+b. Evaluate validation set performance of each model.
+
+The four models have the following AUCs. 
+
+```{r, warning=FALSE, message=FALSE}
+
+ensemble_AUCs <- data.table(model = character(),
+                            AUC = numeric())
+
+l <-  list("GBM")
+AUC <- h2o.performance(my_gbm, data_valid)@metrics$AUC
+l <-  list.append(l,AUC)
+ensemble_AUCs <- rbind(ensemble_AUCs, l)
+
+l <-  list("RF")
+AUC <- h2o.performance(my_rf, data_valid)@metrics$AUC
+l = list.append(l,AUC)
+ensemble_AUCs <- rbind(ensemble_AUCs, l)
+
+l <-  list("GLM")
+AUC <- h2o.performance(my_glm, data_valid)@metrics$AUC
+l <-  list.append(l,AUC)
+ensemble_AUCs <- rbind(ensemble_AUCs, l)
+
+l <- list("NN")
+AUC <- h2o.performance(my_nn, data_valid)@metrics$AUC
+l <-  list.append(l,AUC)
+ensemble_AUCs <- rbind(ensemble_AUCs, l)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+pander(ensemble_AUCs, caption = "Base learners' AUC")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
+
+c. How large are the correlations of predicted scores of the validation set produced by the base learners?
+
+
+```{r, message=FALSE, warning=FALSE}
+
+gbm_predict <- h2o.predict(my_gbm, newdata = data_valid)
+rf_predict <- h2o.predict(my_rf, newdata = data_valid)
+glm_predict <- h2o.predict(my_glm, newdata = data_valid)
+nn_predict <- h2o.predict(my_nn, newdata = data_valid)
+
+gc <- cor(gbm_predict)
+c <- cor(rf_predict)
+glc <- cor(glm_predict)
+nc <- cor(nn_predict)
+
+correlations <- data.table(model = character(),
+                           correlation = numeric())
+
+l  <-  list("GBM")
+l <- list.append(l, gc$Yes[1])
+correlations <- rbind(correlations, l)
+
+l  <-  list("RF")
+l <- list.append(l, c$Yes[1])
+correlations <- rbind(correlations, l)
+
+l  <-  list("GLM")
+l <- list.append(l, glc$Yes[1])
+correlations <- rbind(correlations, l)
+
+l  <-  list("Neural net")
+l <- list.append(l, nc$Yes[1])
+correlations <- rbind(correlations, l)
+
+pander(correlations, caption = "Correlation of predicted scores at the base learners")
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+```
+
+d. Create a stacked ensemble model from the base learners. Experiment with at least two different ensembling meta learners.
+
+I used glm and random forest as metalearning algorithms. 
+
+```{r, warning=FALSE, message=FALSE}
+ensemble_1 <- h2o.stackedEnsemble(x = X,
+                                y = y,
+                                training_frame = data_train,
+                                model_id = "my_ensemble_1",
+                                metalearner_algorithm = "glm",
+                                base_models = list(my_gbm, 
+                                                   my_rf,
+                                                   my_glm,
+                                                   my_nn))
+
+ensemble_2 <- h2o.stackedEnsemble(x = X,
+                                y = y,
+                                training_frame = data_train,
+                                model_id = "my_ensemble_2",
+                                metalearner_algorithm = "drf",
+                                base_models = list(my_gbm, 
+                                                   my_rf,
+                                                   my_glm,
+                                                   my_nn))
+
+
+```
+
+e. Evaluate ensembles on validation set. Did it improve prediction?
+
+```{r, warning=FALSE, message=FALSE}
+stacked_AUCs <- data.table(metalearner = character(),
+                            AUC = numeric())
+
+l <-  list("GLM")
+AUC <- h2o.performance(ensemble_1, data_valid)@metrics$AUC
+l <-  list.append(l,AUC)
+stacked_AUCs <- rbind(stacked_AUCs, l)
+
+l <-  list("RF")
+AUC <- h2o.performance(ensemble_2, data_valid)@metrics$AUC
+l <-  list.append(l,AUC)
+stacked_AUCs <- rbind(stacked_AUCs, l)
+
+pander(stacked_AUCs, caption = "Stacked model AUCs")
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+```
+Using glm as metalearner slightly improved AUC, but random forest did not help too much. GBM is far the most stable model, and with proper grid search it gives the highest AUC in general, at least on the validation set.
+
+f. Evaluate the best performing model on the test set. How does performance compare to that of the validation set?
+
+```{r, message=FALSE, warning=FALSE}
+
+AUC <- h2o.performance(ensemble_1, data_test)@metrics$AUC
+
+print(paste0("The best performing model is the glm-based stack, which produces an AUC of ", round(AUC, 3), ". This is slightly lower than on the validation set."))
+
+```
+
+
+

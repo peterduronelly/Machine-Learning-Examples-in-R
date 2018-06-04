@@ -1,0 +1,338 @@
+---
+title: "Homework Assignment 1"
+author: "Peter Duronelly"
+subtitle: Data Science and Machine Learning 1 - CEU 2018
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    df_print: paged
+---
+
+<style>
+body {
+text-align: justify;
+font-size: 13px}
+</style>
+<br>
+<br>
+
+###1. Modell Selection With a Validation Set
+
+
+&nbsp;&nbsp;**1/a.** Reading and cleaning, modifiying data.
+
+```{r}
+library(data.table)
+library(caret)
+library(rpart)
+library(ggplot2)
+library(GGally)
+library(scales)
+```
+
+```{r}
+
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/king_county_house_prices/kc_house_data.csv")
+
+data[, `:=`(floors = as.numeric(floors), zipcode = factor(zipcode))]
+data[, log_price := log(price)]
+
+data[, c("id", "date", "sqft_living15", "sqft_lot15", "price") := NULL]
+
+set.seed(1234)
+```
+
+<br>
+&nbsp;&nbsp;Partitioning data.
+```{r}
+split_ratio = 0.5
+
+train_indices <- createDataPartition(y = data[["log_price"]], 
+                                  times = 1,
+                                  p = split_ratio,
+                                  list = FALSE)
+data_train <- data[train_indices, ]
+data_temp <-data[-train_indices, ]
+
+validation_indices <- createDataPartition(y = data_temp[["log_price"]], 
+                                  times = 1,
+                                  p = split_ratio,
+                                  list = FALSE)
+data_validation <- data_temp[validation_indices,]
+data_test <- data_temp[-validation_indices,]
+```
+<br>
+&nbsp;&nbsp;**1/b.** Training three models: a simple linear regression, a multivariate linear regression, and a regression tree (where cp = 0.0001).
+```{r}
+
+train_control <- trainControl(method = "none")
+tune_grid <- data.frame("cp" = 0.0001)
+
+simple_linear_fit <- train(log_price ~ sqft_living,
+                           data = data_train,
+                           method = "lm",
+                           trControl = train_control)
+
+linear_fit <- train(log_price ~ .,
+                           data = data_train,
+                           method = "lm",
+                           trControl = train_control)
+
+rpart_fit <- train(log_price ~ .,
+                           data = data_train,
+                           method = "rpart",
+                           trControl = train_control,
+                           tuneGrid = tune_grid)
+```
+<br>
+&nbsp;&nbsp;**1/c.** Comparing models thru **RMSE**.
+```{r}
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+
+simple_linear_rmse <- RMSE(predict.train(simple_linear_fit, data_validation), 
+                           data_validation[["log_price"]])
+linear_rmse <- RMSE(predict.train(linear_fit, data_validation), 
+                           data_validation[["log_price"]])
+rpart_rmse <- RMSE(predict.train(rpart_fit, data_validation), 
+                           data_validation[["log_price"]])
+message("Simple linear model RMSE: ", simple_linear_rmse, "\nMultiple linear model RMSE: ", linear_rmse, "\nRpart model RMSE: ", rpart_rmse)
+
+
+```
+<br>
+&nbsp;&nbsp;**1/d.** At this point the **multiple linear regression** provides the best fit for our model. 
+
+```{r}
+final_performance_measure <- RMSE(predict.train(linear_fit, data_test), 
+                           data_test[["log_price"]])
+message("The final performance measure is: ", final_performance_measure)
+```
+<br>
+&nbsp;&nbsp;**1/e** What we see is the the RMSE of the multiple linear fit is approximately the same (even slightly better) as on the validation set. 
+
+
+### 2. Predicting Developer Salaries
+
+
+
+```{r}
+data <- fread("C:/Users/peter/OneDrive/FOLDERS/CEU/Data Science and Machine Learning 1/teach-ML-CEU-master-bizanalytics/data/stackoverflow2017/survey_results_public_selected.csv", stringsAsFactors = TRUE)
+
+data <- data[!is.na(Salary) & Salary > 0]
+data <- data[complete.cases(data)]
+data <- data[, Gender := ifelse(Gender == "Male", "Male",
+                              ifelse(Gender == "Female", "Female", "Other"))]
+large_countries <- data[, .N, by = "Country"][N > 60][["Country"]]
+data <- data[, Country := ifelse(Country %in% large_countries, Country, "Other")]
+```
+
+&nbsp;&nbsp;**2/a.** The data cleansing steps are the following. We drop data where salary is missing or when it is entered with a zero value. Next we drop the observations where any other data is missing. Then we care for cases where gender is misspecified: for all observations, where the value of the gender variable is not "Male" or "Female", we set gender to "Other". Finally we specify countries from which we have more than 60 observations. These will be standalone countries in the dataset. Those observations, which come from countries with maximum 60 values, will be grouped in a single set of "other" countries. 
+
+&nbsp;&nbsp;**2/b.** Charting the data: salary is the only numerical variable in our table. Other variables, which were numerical, ratio scale data, have been turned into cathegorical variables. We obvsiously need to plot the salary itself, which unsurprisingly has a long right tail, and the majority of the observations are between 20K and 80K. Despite the original data cleansing, we still have observations where the salary is very close to zero, which should be some unhandled data error. 
+
+```{r}
+ggplot(data, aes(Salary)) + geom_histogram(bins = 32, color="white", fill="grey") + theme_bw() +
+  labs(title = "Distribution of Salary ", x = "salary", y = "frequency") + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_x_continuous(labels = comma, breaks = seq(0, 200000, 50000)) 
+```
+<br>
+&nbsp;&nbsp; Interestingly, salary is pretty uniform across gender, at least where we have clear information. It is sloghtly lower for the "ither" category, whatever "other" means. 
+```{r}
+ggplot(data = data, aes(factor(Gender), Salary)) + geom_boxplot() + theme_bw() + 
+  labs(title = "Salary by Gender", x = "gender", y = "salary") + 
+  theme(plot.title = element_text(size = rel(1))) + 
+  scale_y_continuous(labels = comma)
+```
+<br>
+&nbsp;&nbsp;Formal education is also a factor in setting wages. It is strinking, though, that the majority of programmers with elementary education earn as much or more than those with a master's!
+```{r}
+ggplot(data = data, aes(factor(FormalEducation), Salary)) + geom_boxplot() + theme_bw() + 
+  labs(title = "Salary by Formal Education", x = "formal education", y = "salary") + 
+  theme(plot.title = element_text(size = rel(1))) + scale_y_continuous(labels = comma) + 
+  coord_flip()
+```
+<br>
+&nbsp;&nbsp; Company size looks to be another factor by which salaries differ. 
+
+```{r}
+ggplot(data = data, aes(factor(CompanySize), Salary)) + geom_boxplot() + theme_bw() + 
+  labs(title = "Salary by Company Size", x = "company size", y = "salary") + 
+  theme(plot.title = element_text(size = rel(1))) + scale_y_continuous(labels = comma) + 
+  coord_flip()
+```
+<br>
+&nbsp;&nbsp;**2/c.** Creating a training and a test set.
+
+```{r}
+set.seed(1234)
+data$log_salary <- log(data$Salary)
+train_indices <- createDataPartition(y = data[["log_salary"]], 
+                                  times = 1,
+                                  p = 0.7,
+                                  list = FALSE)
+data_train <- data[train_indices, ]
+data_test <-data[-train_indices, ]
+```
+
+&nbsp;&nbsp;**2/c.** Building models
+
+Here I looped a regression tree through regularization parameters. 
+
+```{r}
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+#RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2)) # helper function to calc SSE
+regularization_parameters <- c(0.01, 0.001, 0.0001, 0.00001, 0.000001)
+#regularization_parameters <- c(0.01, 0.001, 0.0001, 0.00001, 0.000001)
+n_parameters <- length(regularization_parameters)
+#n_parameters <- length(regularization_parameters)
+train_error <- rep(0, length(regularization_parameters))
+#train_error <- rep(0, length(regularization_parameters)) 
+test_error <- rep(0, length(regularization_parameters))
+#test_error <- rep(0, length(regularization_parameters))
+
+for (reg in 1:n_parameters){
+  param <- regularization_parameters[reg]
+  model <- rpart(formula = log_salary ~ . -Salary,
+                 data = data_train,
+                 control = rpart.control(xval = 0, cp = param),
+                 method = "anova")
+  
+  train_error[reg] <- RMSE(predict(model, data_train), data_train$log_salary)
+  test_error[reg] <- RMSE(predict(model, data_test), data_test$log_salary)
+}
+
+errors <- data.table("parameter" = regularization_parameters,
+                     "train_error" = train_error,
+                     "test_error" = test_error)
+
+
+```
+
+
+&nbsp;&nbsp;Plotting the errors it looks that a regularization parameter of 0.001 gives the best RMSE. 
+
+
+```{r}
+errors_long <- melt(errors, id.vars = "parameter")
+
+ggplot(data = errors_long) + 
+  geom_line(aes(x = parameter, y = value, linetype = variable)) +
+  labs(title = "Errors by Regularization Paramaters", x = "regularization parameter", y = "RMSE") + 
+  theme(plot.title = element_text(size = rel(1))) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x))) + theme_bw()
+  
+```
+<br>
+&nbsp;&nbsp;I then ran the same model I split the dataset by setting the seed differently. The numerical RMSE value was slightly different but the pattern was very similar. The same reg parameter yielded the best result on the test dataset. 
+
+```{r}
+set.seed(4321)
+train_indices <- createDataPartition(y = data[["log_salary"]], 
+                                  times = 1,
+                                  p = 0.7,
+                                  list = FALSE)
+data_train <- data[train_indices, ]
+data_test <-data[-train_indices, ]
+RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2))
+#RMSE <- function(x, true_x) sqrt(mean((x - true_x)^2)) # helper function to calc SSE
+regularization_parameters <- c(0.01, 0.001, 0.0001, 0.00001, 0.000001)
+#regularization_parameters <- c(0.01, 0.001, 0.0001, 0.00001, 0.000001)
+n_parameters <- length(regularization_parameters)
+#n_parameters <- length(regularization_parameters)
+train_error <- rep(0, length(regularization_parameters))
+#train_error <- rep(0, length(regularization_parameters)) 
+test_error <- rep(0, length(regularization_parameters))
+#test_error <- rep(0, length(regularization_parameters))
+
+for (reg in 1:n_parameters){
+  param <- regularization_parameters[reg]
+  model <- rpart(formula = log_salary ~ . -Salary,
+                 data = data_train,
+                 control = rpart.control(xval = 0, cp = param),
+                 method = "anova")
+  
+  train_error[reg] <- RMSE(predict(model, data_train), data_train$log_salary)
+  test_error[reg] <- RMSE(predict(model, data_test), data_test$log_salary)
+}
+
+errors <- data.table("parameter" = regularization_parameters,
+                     "train_error" = train_error,
+                     "test_error" = test_error)
+errors_long <- melt(errors, id.vars = "parameter")
+
+ggplot(data = errors_long) + 
+  geom_line(aes(x = parameter, y = value, linetype = variable)) +
+  labs(title = "Errors by Regularization Paramaters - 2nd Run", x = "regularization parameter", y = "RMSE") + 
+  theme(plot.title = element_text(size = rel(1))) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x))) + theme_bw()
+```
+<br>
+&nbsp;&nbsp;Finally I also run a linear model with the last seed. 
+
+```{r}
+train_control <- trainControl(method = "none")
+linear_fit <- train(log_salary ~ . - Salary,
+                           data = data_train,
+                           method = "lm",
+                           trControl = train_control)
+RMSE <- RMSE(predict.train(linear_fit, data_test), 
+                           data_test$log_salary)
+min_rpart_rmse <- min(test_error)
+message("The RMSE from the linear model is: ", RMSE, ".")
+```
+
+```{r}
+message("The RMSE from the best rpart model is: ", min_rpart_rmse, ".")
+```
+
+&nbsp;&nbsp;It looks that the multiple linear regression yields slightly better result than the regression tree. 
+
+<center>
+###3. Leave-one-out Cross Validation
+</center>
+
+&nbsp;&nbsp;**3/a.** This is a more computation-heavy excersize than a k-fold CV. Also, you only have average RMSE score, while in k-fold CV, where CV is at least 10, you can have other measures of your distribution. (if k = 10 you have deciles, for instance). This can show you the stability of your model: its dependence on the data split. 
+
+&nbsp;&nbsp;**3/b.** LOOCV, while computationally more cumbersome, has less bias than k-fold CV. In addition, since the training-test split process involves no randomness, it will give the same result when the estimation is repeated. This is not the case at the randomized CV approach. 
+
+&nbsp;&nbsp;**3/c.**
+
+```{r}
+library(titanic)
+library(data.table)
+
+data_train <- data.table(titanic_train)
+data_train[, Survived := factor(ifelse(Survived == 1, "survived", "died"))]
+set.seed(1234)
+```
+
+```{r}
+train_control_loocv <- trainControl(method = "loocv", classProbs = TRUE)
+logit_loocv <- train(Survived ~ Fare + Sex,
+                           data = data_train,
+                           method = "glm",
+                           trControl = train_control_loocv)
+
+train_control_cv <- trainControl(method = "cv", number = 10, classProbs = TRUE)
+logit_10fold <- train(Survived ~ Fare + Sex,
+                           data = data_train,
+                           method = "glm",
+                           trControl = train_control_cv)
+
+```
+
+&nbsp;&nbsp;**3/d.**
+```{r}
+summary(logit_loocv$resample)
+summary(logit_10fold$resample)
+```
+&nbsp;&nbsp; The two models result in the same accuracy: on average the two models correctly predicts 78 percent of the cases. The quantiles of the first model which is based on the loocv method cannot be different than zero or one: as we test every single regression on one single observation, we either identify it correctly or not. This way we get a vector of 891 elements where all entries are 0 or 1. The quantiles of this population cannot be else than 0 and 1. 
+```{r}
+data_train$survpred <- predict(logit_loocv, newdata = data_train)
+confusionMatrix(data_train$survpred, data_train$Survived)
+```
+
